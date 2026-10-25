@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fil">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Larawan → 3D</title>
+<style>
+:root{--bg:#14202b;--panel:#1d2f3d;--ink:#f1ece0;--mute:#9db0bd;--acc:#ffb703;--line:#2f4759;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme: dark){:root{--bg:#14202b}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font-family:"Trebuchet MS","Segoe UI",Arial,sans-serif;display:flex;flex-direction:column}
+header{padding:12px 14px 8px}
+h1{margin:0;font-size:1.25rem;font-weight:700}
+p.sub{margin:2px 0 0;color:var(--mute);font-size:.85rem}
+#stage{flex:1;min-height:260px;position:relative;touch-action:none;background:radial-gradient(circle at 50% 40%,#233b4d,#0f1820)}
+canvas{display:block;width:100%;height:100%}
+#hint{position:absolute;left:0;right:0;bottom:8px;text-align:center;color:var(--mute);font-size:.78rem;pointer-events:none}
+.panel{background:var(--panel);border-top:1px solid var(--line);padding:12px 14px;display:grid;gap:10px}
+.row{display:grid;grid-template-columns:90px 1fr 36px;align-items:center;gap:8px;font-size:.85rem}
+.row output{color:var(--acc);text-align:right}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+button,label.file{background:var(--acc);color:#1a1200;border:0;border-radius:8px;padding:10px 14px;font:inherit;font-weight:700;cursor:pointer}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:focus-visible,label.file:focus-within,input:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+label.file input{position:absolute;opacity:0;width:1px;height:1px}
+select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font:inherit}
+</style>
+</head>
+<body>
+<header>
+<h1>Larawan → 3D</h1>
+<p class="sub">Mag-upload ng larawan at gagawin itong 3D na pwedeng iikot, parang sa mga laro.</p>
+</header>
+<div id="stage"><div id="hint">I-drag para umikot · Pinch o scroll para mag-zoom</div></div>
+<div class="panel">
+<div class="btns">
+<label class="file">Pumili ng larawan<input id="file" type="file" accept="image/*"></label>
+<select id="mode" aria-label="Estilo">
+<option value="voxel">Voxel (blocks)</option>
+<option value="relief">Relief (bundok)</option>
+</select>
+<button class="alt" id="spin">Auto-ikot: Naka-on</button>
+</div>
+<div class="row"><span>Detalye</span><input id="res" type="range" min="16" max="96" value="56"><output id="resO">56</output></div>
+<div class="row"><span>Taas ng 3D</span><input id="depth" type="range" min="1" max="30" value="12"><output id="depthO">12</output></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+var stage=document.getElementById('stage');
+var scene=new THREE.Scene();
+var camera=new THREE.PerspectiveCamera(45,1,0.1,1000);
+var renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+stage.appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0xffffff,0.65));
+var sun=new THREE.DirectionalLight(0xffffff,0.8);sun.position.set(30,50,40);scene.add(sun);
+
+var group=new THREE.Group();scene.add(group);
+var dist=70,rotY=0.5,rotX=-0.35,auto=true,current=null;
+
+function size(){var w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+window.addEventListener('resize',size);
+
+// default sample image: simple heart-in-sun drawn on canvas
+function sample(){
+var c=document.createElement('canvas');c.width=c.height=128;var x=c.getContext('2d');
+var g=x.createLinearGradient(0,0,0,128);g.addColorStop(0,'#2b6cb0');g.addColorStop(1,'#90cdf4');x.fillStyle=g;x.fillRect(0,0,128,128);
+x.fillStyle='#ffb703';x.beginPath();x.arc(64,64,40,0,7);x.fill();
+x.fillStyle='#e63946';x.beginPath();x.moveTo(64,96);x.bezierCurveTo(24,66,44,34,64,54);x.bezierCurveTo(84,34,104,66,64,96);x.fill();
+return c;}
+var src=sample();
+
+function build(){
+var n=+document.getElementById('res').value,h=+document.getElementById('depth').value,mode=document.getElementById('mode').value;
+var w,hh,asp=src.width/src.height;
+if(asp>=1){w=n;hh=Math.max(4,Math.round(n/asp));}else{hh=n;w=Math.max(4,Math.round(n*asp));}
+var c=document.createElement('canvas');c.width=w;c.height=hh;
+var x=c.getContext('2d');x.drawImage(src,0,0,w,hh);
+var d=x.getImageData(0,0,w,hh).data;
+if(current){group.remove(current);current.traverse(function(o){if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});}
+var s=48/Math.max(w,hh);
+var obj=new THREE.Group();
+function lum(i){return (0.299*d[i]+0.587*d[i+1]+0.114*d[i+2])/255;}
+if(mode==='voxel'){
+var cnt=0,i;for(i=0;i<w*hh;i++){if(d[i*4+3]>40)cnt++;}
+var m=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshLambertMaterial(),cnt);
+var mat=new THREE.Matrix4(),col=new THREE.Color(),k=0;
+for(var yy=0;yy<hh;yy++)for(var xx=0;xx<w;xx++){
+i=(yy*w+xx)*4;if(d[i+3]<=40)continue;
+var t=Math.max(0.15,lum(i))*h+1;
+mat.makeScale(s,t*s,s);
+mat.setPosition((xx-w/2)*s,(hh/2-yy)*s,0);
+// extrude toward viewer along z: use depth as z-scale instead
+mat.makeScale(s,s,t*s);mat.setPosition((xx-w/2)*s,(hh/2-yy)*s,t*s/2);
+m.setMatrixAt(k,mat);col.setRGB(d[i]/255,d[i+1]/255,d[i+2]/255);m.setColorAt(k,col);k++;}
+m.instanceMatrix.needsUpdate=true;if(m.instanceColor)m.instanceColor.needsUpdate=true;
+obj.add(m);
+}else{
+var geo=new THREE.PlaneGeometry(w*s,hh*s,w-1,hh-1);
+var pos=geo.attributes.position,cols=new Float32Array(pos.count*3);
+for(var j=0;j<pos.count;j++){var i2=j*4;pos.setZ(j,lum(i2)*h*s);cols[j*3]=d[i2]/255;cols[j*3+1]=d[i2+1]/255;cols[j*3+2]=d[i2+2]/255;}
+geo.setAttribute('color',new THREE.BufferAttribute(cols,3));geo.computeVertexNormals();
+obj.add(new THREE.Mesh(geo,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide})));
+}
+current=obj;group.add(obj);
+}
+
+function bind(id,out){var e=document.getElementById(id),o=document.getElementById(out);e.addEventListener('input',function(){o.textContent=e.value;});e.addEventListener('change',build);}
+bind('res','resO');bind('depth','depthO');
+document.getElementById('mode').addEventListener('change',build);
+document.getElementById('spin').addEventListener('click',function(){auto=!auto;this.textContent='Auto-ikot: '+(auto?'Naka-on':'Patay');});
+document.getElementById('file').addEventListener('change',function(e){
+var f=e.target.files[0];if(!f)return;var img=new Image();
+img.onload=function(){src=img;build();URL.revokeObjectURL(img.src);};img.src=URL.createObjectURL(f);});
+
+// drag + zoom
+var pts={},last=0;
+stage.addEventListener('pointerdown',function(e){stage.setPointerCapture(e.pointerId);pts[e.pointerId]=[e.clientX,e.clientY];auto=false;document.getElementById('spin').textContent='Auto-ikot: Patay';});
+stage.addEventListener('pointerup',function(e){delete pts[e.pointerId];last=0;});
+stage.addEventListener('pointermove',function(e){
+var p=pts[e.pointerId];if(!p)return;var ids=Object.keys(pts);
+if(ids.length===1){rotY+=(e.clientX-p[0])*0.01;rotX=Math.max(-1.4,Math.min(1.4,rotX+(e.clientY-p[1])*0.01));}
+pts[e.pointerId]=[e.clientX,e.clientY];
+if(ids.length===2){var a=pts[ids[0]],b=pts[ids[1]],dd=Math.hypot(a[0]-b[0],a[1]-b[1]);if(last)dist=Math.max(25,Math.min(160,dist*last/dd));last=dd;}
+});
+stage.addEventListener('wheel',function(e){e.preventDefault();dist=Math.max(25,Math.min(160,dist+e.deltaY*0.05));},{passive:false});
+
+function loop(){requestAnimationFrame(loop);if(auto)rotY+=0.006;
+group.rotation.set(rotX,rotY,0);camera.position.set(0,0,dist);camera.lookAt(0,0,0);renderer.render(scene,camera);}
+size();build();loop();
+})();
+</script>
+</body>
+</html>
